@@ -1,4 +1,68 @@
 <h1 align="center">Speaker Diarization Using OpenAI Whisper</h1>
+
+
+
+## Functionality
+
+1. `batch_diarize_audio(input_audios, model_name="medium.en", stemming=False)`: This function takes a list of input audio files, processes them, and generates speaker-aware transcripts and SRT files for each input audio file. It maintains consistent speaker numbering across all files in the batch and labels the most-spoken speaker as the 'instructor'.
+
+2. `diarize_audio(input_audio, model_name="medium.en", stemming=False)`: This function takes a single input audio file and processes it to extract speaker-wise word mappings and sentence mappings. It generates speaker-aware transcripts and SRT files for the input audio file.
+
+3. Helper functions: The code also includes several helper functions for processing the audio files, extracting speaker information, and generating output files.
+
+## Usage
+
+1. Import the necessary libraries and functions:
+
+```python
+from batch_diarize import batch_diarize_audio
+```
+
+2. Prepare a list of input audio files:
+
+```python
+input_audios = ["audio1.wav", "audio2.wav", "audio3.wav"]
+```
+
+3. Call the `batch_diarize_audio` function with the list of input audio files:
+
+```python
+results = batch_diarize_audio(input_audios)
+```
+
+4. The `results` variable will contain a list of tuples, where each tuple contains the following information for each input audio file:
+
+    - input_audio: The input audio file name
+    - wsm: Speaker-wise word mappings
+    - ssm: Speaker-wise sentence mappings
+    - instructor_speaker_number: The speaker number assigned to the instructor
+    - instructor_embeddings: The embeddings of the instructor
+
+5. The code will also generate output files with speaker-aware transcripts (in TXT format) and subtitles (in SRT format) for each input audio file. The output files will have the same name as the input audio files, with the corresponding file extensions (.txt and .srt).
+
+## Example
+
+```python
+from batch_diarize import batch_diarize_audio
+
+input_audios = ["audio1.wav", "audio2.wav", "audio3.wav"]
+results = batch_diarize_audio(input_audios)
+
+for result in results:
+    print(f"Input audio: {result[0]}")
+    print(f"Instructor speaker number: {result[3]}")
+    print(f"Instructor embeddings: {result[4]}")
+    print("Speaker-wise sentence mappings:")
+    for ssm in result[2]:
+        print(ssm)
+```
+
+This example demonstrates how to use the `batch_diarize_audio` function to process a list of input audio files and generate speaker-aware transcripts and SRT files. It also prints the instructor speaker number, instructor embeddings, and speaker-wise sentence mappings for each input audio file.
+
+
+
+
+Forked From 
 <p align="center">
   <a href="https://github.com/MahmoudAshraf97/whisper-diarization/stargazers">
     <img src="https://img.shields.io/github/stars/MahmoudAshraf97/whisper-diarization.svg?colorA=orange&colorB=orange&logo=github"
