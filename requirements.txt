@@ -13,3 +13,4 @@ git+https://github.com/openai/whisper.git
 git+https://github.com/m-bain/whisperX.git@4cb167a225c0ebaea127fd6049abfaa3af9f8bb4
 git+https://github.com/facebookresearch/demucs#egg=demucs
 deepmultilingualpunctuation
+openai
