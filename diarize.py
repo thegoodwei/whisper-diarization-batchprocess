@@ -13,18 +13,20 @@ from omegaconf import OmegaConf
 import json
 import shutil
 import openai
-APIKEY = os.environ["OPENAI_API_KEY"]
-openai.api_key = APIKEY
+from pydub.silence import detect_nonsilent
+import numpy as np
+from pydub import AudioSegment
 
+openai.api_key = os.environ["OPENAI_API_KEY"]
+
+participant = "Speaker" # retitle sepakers as participanats, usually "Speaker"
 """ Auto transcribe and diarize a batch of audio files, titling the most-frequent speaker as the 'instructor'
-
-This is a work in progress to maintain consistent speaker numbers matching voice embeddings throughout the entire batch
-
-Thanks to MahmoudAshraf97 for the command line integration of WhisperX and NeMo, adapted below for API key usage
     """
     
-def batch_diarize_audio(input_audios, model_name="Medium.en", stemming=False):
+def batch_diarize_audio(input_audios, model_name="medium.en",  stemming=False):
     all_results = []
+    runtime=0
+    srt_files=[]
     for input_audio in input_audios:
         wsm, ssm = diarize_audio(input_audio, model_name, stemming)
         # Extract the instructor's embeddings from the first file, if not already extracted
@@ -37,8 +39,11 @@ def batch_diarize_audio(input_audios, model_name="Medium.en", stemming=False):
         with open(f"{input_audio[:-4]}.txt", "w", encoding="utf-8-sig") as f:
             get_speaker_aware_transcript(ssm, f)
         with open(f"{input_audio[:-4]}.srt", "w", encoding="utf-8-sig") as srt:
-            write_srt(ssm, srt)
-    return all_results
+            runtime=write_srt(ssm, srt, runtime)
+        srt_files.append(f"{input_audio[:-4]}.srt")
+    output_file=f"{input_audios[0][:-6]}.srt"
+    combine_srt_files(srt_files=srt_files, output_file=output_file)
+    return output_file
 
 def update_speaker_numbers(ssm, instructor_speaker_number):
     # 1. Iterate through ssm
@@ -90,44 +95,47 @@ def extract_instructor_embeddings(wsm, instructor_speaker_number):
             instructor_embeddings.append(word_dict['embedding'])
     return instructor_embeddings
 
+def split_audio(audio_file, max_duration=59*60*1000, min_silence_len=500, silence_thresh=-40):
+    
+    audio = AudioSegment.from_file(audio_file)
+    audio_duration = len(audio)
+
+    if audio_duration <= max_duration:
+        return [audio]
+
+    nonsilent_ranges = detect_nonsilent(audio, min_silence_len=min_silence_len, silence_thresh=silence_thresh)
+    split_points = []
+
+    current_duration = 0
+    for idx, (start, end) in enumerate(nonsilent_ranges):
+        current_duration += end - start
+        if current_duration >= max_duration:
+            split_points.append(end)
+            current_duration = 0
+
+    segments = []
+    prev_split_point = 0
+    for split_point in split_points:
+        segments.append(audio[prev_split_point:split_point])
+        prev_split_point = split_point
+    segments.append(audio[prev_split_point:])
+    
+    for idx, segment in enumerate(segments):
+        filename=os.path.splitext(os.path.basename(audio_file))[0]+"_"+str(idx)+".m4a"
+        segment.export(filename, format="m4a")
+
+    return audio_file,segments
+
+    
+
 def diarize_audio(input_audio, model_name="medium.en", stemming=False):
 
-
     punct_model_langs = [
-     "en",
-     "fr",
-     "de",
-     "es",
-     "it",
-     "nl",
-     "pt",
-     "bg",
-     "pl",
-     "cs",
-     "sk",
-     "sl",
-     ]
+        "en",
+    ]
     wav2vec2_langs = [
-     "en",
-     "fr",
-     "de",
-     "es",
-     "it",
-     "nl",
-     "pt",
-     "ja",
-     "zh",
-     "uk",
-     "pt",
-     "ar",
-     "ru",
-     "pl",
-     "hu",
-     "fi",
-     "fa",
-     "el",
-     "tr",
-     ]
+        "en",
+    ]
 
     if stemming:
         # Isolate vocals from the rest of the audio/music, default to false for vocals only interviews
@@ -146,105 +154,126 @@ def diarize_audio(input_audio, model_name="medium.en", stemming=False):
 
     # Large models result in considerably better and more aligned (words, timestamps) mapping.
     if model_name=="API":
-        whisper_results = openai.Audio.transcribe("whisper-1", vocal_target, beam_size=None, verbose=False)
-
+        print("Attmpting to transcribe audio via whisper-1 API")
+        audio_file= open(vocal_target, "rb")
+        whisper_results = openai.Audio.transcribe("whisper-1", audio_file)
+        print(whisper_results)
+        return whisper_results
     else:
         whisper_model = load_model(model_name)
         whisper_results = whisper_model.transcribe(vocal_target, beam_size=None, verbose=False)
 
     # clear gpu vram
-    del whisper_model
-    torch.cuda.empty_cache()
+        del whisper_model
+        torch.cuda.empty_cache()
 
-    device = "cuda"
-    alignment_model, metadata = whisperx.load_align_model(
-        language_code=whisper_results["language"], device=device
-    )
-    result_aligned = whisperx.align(
-        whisper_results["segments"], alignment_model, metadata, vocal_target, device
-    )
+        device = "cuda"
+        alignment_model, metadata = whisperx.load_align_model(
+                language_code=whisper_results["language"], device=device# "en", device=device
+            )
+        result_aligned = whisperx.align(
+                whisper_results["segments"], alignment_model, metadata, vocal_target, device
+            )
+            # clear gpu vram
 
-    # clear gpu vram
-    del alignment_model
-    torch.cuda.empty_cache()
+        del alignment_model
+        torch.cuda.empty_cache()
 
-    # convert audio to mono for NeMo combatibility
-    signal, sample_rate = librosa.load(vocal_target, sr=None)
-    ROOT = os.getcwd()
-    temp_path = os.path.join(ROOT, "temp_outputs")
-    if not os.path.exists(temp_path):
-        os.mkdir(temp_path)
-    os.chdir(temp_path)
-    soundfile.write("mono_file.wav", signal, sample_rate, "PCM_24")
+        # convert audio to mono for NeMo combatibility
+        signal, sample_rate = librosa.load(vocal_target, sr=None)
+        ROOT = os.getcwd()
+        temp_path = os.path.join(ROOT, "temp_outputs")
+        if not os.path.exists(temp_path):
+            os.mkdir(temp_path)
+        os.chdir(temp_path)
+        soundfile.write("mono_file.wav", signal, sample_rate, "PCM_24")
 
-    # Initialize NeMo MSDD diarization model
-    msdd_model = NeuralDiarizer(cfg=create_config())
-    msdd_model.diarize()
+        # Initialize NeMo MSDD diarization model
+        msdd_model = NeuralDiarizer(cfg=create_config())
+        msdd_model.diarize()
 
-    del msdd_model
-    torch.cuda.empty_cache()
+        del msdd_model
+        torch.cuda.empty_cache()
 
-    # Reading timestamps <> Speaker Labels mapping
+        # Reading timestamps <> Speaker Labels mapping
 
-    output_dir = "nemo_outputs"
+        output_dir = "nemo_outputs"
 
-    speaker_ts = []
-    with open(f"{output_dir}/pred_rttms/mono_file.rttm", "r") as f:
-        lines = f.readlines()
-        for line in lines:
-            line_list = line.split(" ")
-            s = int(float(line_list[5]) * 1000)
-            e = s + int(float(line_list[8]) * 1000)
-            speaker_ts.append([s, e, int(line_list[11].split("_")[-1])])
+        speaker_ts = []
+        with open(f"{output_dir}/pred_rttms/mono_file.rttm", "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                line_list = line.split(" ")
+                s = int(float(line_list[5]) * 1000)
+                e = s + int(float(line_list[8]) * 1000)
+                speaker_ts.append([s, e, int(line_list[11].split("_")[-1])])
 
-    wsm = get_words_speaker_mapping(result_aligned["word_segments"], speaker_ts, "start")
+        wsm = get_words_speaker_mapping(result_aligned["word_segments"], speaker_ts, "start")
 
-    if whisper_results["language"] in punct_model_langs:
-        # restoring punctuation in the transcript to help realign the sentences
-        punct_model = PunctuationModel(model="kredor/punctuate-all")
+        if whisper_results["language"] in punct_model_langs:
+            # restoring punctuation in the transcript to help realign the sentences
+            punct_model = PunctuationModel(model="kredor/punctuate-all")
 
-        words_list = list(map(lambda x: x["word"], wsm))
+            words_list = list(map(lambda x: x["word"], wsm))
 
-        labled_words = punct_model.predict(words_list)
+            labled_words = punct_model.predict(words_list)
 
-        ending_puncts = ".?!"
-        model_puncts = ".,;:!?"
+            ending_puncts = ".?!"
+            model_puncts = ".,;:!?"
 
-        # We don't want to punctuate U.S.A. with a period. Right?
-        is_acronym = lambda x: re.fullmatch(r"\b(?:[a-zA-Z]\.){2,}", x)
+            # We don't want to punctuate U.S.A. with a period. Right?
+            is_acronym = lambda x: re.fullmatch(r"\b(?:[a-zA-Z]\.){2,}", x)
 
-        for word_dict, labeled_tuple in zip(wsm, labled_words):
-            word = word_dict["word"]
-            if (
-                word
-                and labeled_tuple[1] in ending_puncts
-                and (word[-1] not in model_puncts or is_acronym(word))
-            ):
-                word += labeled_tuple[1]
-                if word.endswith(".."):
-                    word = word.rstrip(".")
-                word_dict["word"] = word
+            for word_dict, labeled_tuple in zip(wsm, labled_words):
+                word = word_dict["word"]
+                if (
+                    word
+                    and labeled_tuple[1] in ending_puncts
+                    and (word[-1] not in model_puncts or is_acronym(word))
+                ):
+                    word += labeled_tuple[1]
+                    if word.endswith(".."):
+                        word = word.rstrip(".")
+                    word_dict["word"] = word
 
-        wsm = get_realigned_ws_mapping_with_punctuation(wsm)
-    else:
-        print(
-            f'Punctuation restoration is not available for {whisper_results["language"]} language.'
-        )
+            wsm = get_realigned_ws_mapping_with_punctuation(wsm)
+        else:
+            print(
+                f'Punctuation restoration is not available for {whisper_results["language"]} language.'
+            )
 
-    ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
+        ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
 
-    os.chdir(ROOT)  # back to parent dir
-    with open(f"{input_audio[:-4]}.txt", "w", encoding="utf-8-sig") as f:
-        get_speaker_aware_transcript(ssm, f)
+        os.chdir(ROOT)  # back to parent dir
+        with open(f"{input_audio[:-4]}.txt", "w", encoding="utf-8-sig") as f:
+            get_speaker_aware_transcript(ssm, f)
 
-    with open(f"{input_audio[:-4]}.srt", "w", encoding="utf-8-sig") as srt:
-        write_srt(ssm, srt)
+        with open(f"{input_audio[:-4]}.srt", "w", encoding="utf-8-sig") as srt:
+            write_srt(ssm, srt)
 
-    cleanup(temp_path)
-    #return the speaker-wise word mappings and sentences mappings, 
-    # so that we can use this information to maintain consistent speaker numbering across all files in batch
-    return (wsm,ssm)
+        cleanup(temp_path)
+        #return the speaker-wise word mappings and sentences mappings, 
+        # so that we can use this information to maintain consistent speaker numbering across all files in batch
+        return (wsm,ssm)
 
+
+def combine_srt_files(srt_files, output_file):
+    with open(output_file, "w+", encoding="utf-8-sig") as output:
+        subtitle_counter = 1
+        for srt_file in srt_files:
+            with open(srt_file, "r", encoding="utf-8-sig") as f:
+                lines = f.readlines()
+                for line in lines:
+                    if line.strip().isdigit():
+                        output.write(f"{subtitle_counter}\n")
+                        subtitle_counter += 1
+                    else:
+                        output.write(line)
+                        
+                        
+
+
+"""Library of helper functions"""
 def create_config():
     data_dir = "./"
     DOMAIN_TYPE = "telephonic"  # Can be meeting or telephonic based on domain type of the audio file
@@ -365,7 +394,8 @@ def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
     s, e, spk = spk_ts[0]
     prev_spk = spk
     snts = []
-    snt = {"speaker": f"Speaker {spk}", "start_time": s, "end_time": e, "text": ""}
+    snt = {"speaker": f"{participant} {spk}", "start_time": s, "end_time": e, "text": ""}       #Title non-instructing speakers as participants
+#    snt = {"speaker": f"{Speaker {spk}", "start_time": s, "end_time": e, "text": ""}       #Title non-instructing speakers as participants
     for wrd_dict in word_speaker_mapping:
         wrd, spk = wrd_dict["word"], wrd_dict["speaker"]
         s, e = wrd_dict["start_time"], wrd_dict["end_time"]
@@ -383,11 +413,13 @@ def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
         prev_spk = spk
     snts.append(snt)
     return snts
+
 def get_speaker_aware_transcript(sentences_speaker_mapping, f):
     for sentence_dict in sentences_speaker_mapping:
         sp = sentence_dict["speaker"]
         text = sentence_dict["text"]
         f.write(f"\n\n{sp}: {text}")
+
 def format_timestamp(
     milliseconds: float, always_include_hours: bool = False, decimal_marker: str = "."
 ):
@@ -400,16 +432,22 @@ def format_timestamp(
     milliseconds -= seconds * 1_000
     hours_marker = f"{hours:02d}:" if always_include_hours or hours > 0 else ""
     return (f"{hours_marker}{minutes:02d}:{seconds:02d}{decimal_marker}{milliseconds:03d}")
-def write_srt(transcript, file):
+def write_srt(transcript, file,leadtime=0):
     """ Write a transcript to a file in SRT format."""
+    duration=0
     for i, segment in enumerate(transcript, start=1):
         # write srt lines
         print(f"{i}\n"
-            f"{format_timestamp(segment['start_time'], always_include_hours=True, decimal_marker=',')} --> "
-            f"{format_timestamp(segment['end_time'], always_include_hours=True, decimal_marker=',')}\n"
+            f"{format_timestamp((segment['start_time']+leadtime), always_include_hours=True, decimal_marker=',')} --> "
+            f"{format_timestamp(segment['end_time']+leadtime, always_include_hours=True, decimal_marker=',')}\n"
             f"{segment['speaker']}: {segment['text'].strip().replace('-->', '->')}\n",
             file=file,
             flush=True,)
+        if segment['end_time']>duration:
+            duration=segment['end_time']
+    return duration
+        
+    
 def cleanup(path: str):
     """path could either be relative or absolute."""
     # check if file or directory exists
@@ -421,3 +459,10 @@ def cleanup(path: str):
         shutil.rmtree(path)
     else:
         raise ValueError("Path {} is not a file or dir.".format(path))
+    
+    
+if __name__ == "__main__": 
+    # This should work with 10hrs of audio in one file, if a whole day was recorded.
+    input_audio="long_audio_file.wav"
+    diarizedSRT=(batch_diarize_audio(split_audio(input_audio),model_name="medium.en",  stemming=False))
+    print(diarizedSRT)
