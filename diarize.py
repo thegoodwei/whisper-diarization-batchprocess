@@ -23,7 +23,7 @@ This is a work in progress to maintain consistent speaker numbers matching voice
 Thanks to MahmoudAshraf97 for the command line integration of WhisperX and NeMo, adapted below for API key usage
     """
     
-def batch_diarize_audio(input_audios, model_name="API", stemming=False):
+def batch_diarize_audio(input_audios, model_name="Medium.en", stemming=False):
     all_results = []
     for input_audio in input_audios:
         wsm, ssm = diarize_audio(input_audio, model_name, stemming)
