@@ -5,7 +5,7 @@ torchaudio==0.13.1+cu116
 torchtext==0.14.1
 pytorch-lightning==1.8.6
 sanic==22.6.2
-transformers==4.26.1
+transformers==4.21.2
 accelerate
 text-unidecode
 nemo_toolkit[asr]==1.15.0
