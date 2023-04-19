@@ -1,3 +1,73 @@
+"""
+Auto-Diarize
+Auto-Diarize is a Python library for automatically transcribing and diarizing a batch of audio files. It identifies the most frequent speaker as the 'instructor' and reassigns the speaker titles accordingly. The library produces speaker-aware transcripts and subtitle files in the SRT format.
+
+Features
+Automatic transcription and speaker diarization
+Identification of the most frequent speaker as 'Instructor'
+Generation of speaker-aware transcripts and SRT files
+Installation
+To install the Auto-Diarize library, simply run the following command:
+
+pip install auto-diarize
+Usage
+To use the Auto-Diarize library, import the batch_diarize_audio function and provide a list of input audio files. By default, the library uses the "medium.en" model for transcription.
+
+from auto_diarize import batch_diarize_audio
+
+input_audios = ["audio1.wav", "audio2.wav", "audio3.wav"]
+output_srt_file = batch_diarize_audio(input_audios)
+Functions
+batch_diarize_audio(input_audios, model_name="medium.en", stemming=False)
+Transcribes and diarizes a batch of audio files, identifying the most frequent speaker as the 'instructor'. The function returns the combined SRT file for all input audio files.
+
+update_speaker_numbers(ssm, instructor_speaker_number)
+Updates the speaker numbers in the sentence speaker mapping (ssm), replacing the instructor speaker number with "Instructor".
+
+identify_most_frequent_speaker_number(ssm)
+Identifies the most frequent speaker number in the sentence speaker mapping (ssm).
+
+extract_instructor_embeddings(wsm, instructor_speaker_number)
+Extracts the instructor's embeddings from the speaker-wise word mappings (wsm) and the instructor speaker number.
+
+split_audio(audio_file, max_duration=59601000, min_silence_len=500, silence_thresh=-40)
+Splits an audio file into smaller segments based on the specified maximum duration, minimum silence length, and silence threshold.
+
+diarize_audio(input_audio, model_name="medium.en", stemming=False)
+Transcribes and diarizes an input audio file, returning the speaker-wise word mappings (wsm) and sentence speaker mappings (ssm).
+
+Dependencies
+OpenAI
+Demucs
+Whisper
+Librosa
+Pydub
+Soundfile
+NeMo
+PunctuationModel
+
+This script provides a set of functions to perform speaker diarization using NVIDIA NeMo's library and combines subtitle files. I will describe the main functions and their purposes:
+
+combine_srt_files(srt_files, output_file): This function takes a list of subtitle files (.srt) and combines them into a single output file. It iterates through all lines of each subtitle file and writes them to the output file while updating the subtitle counter.
+
+create_config(): This function creates a configuration object for the speaker diarization process. It sets up the necessary directories, downloads the required configuration file, and sets the values for various parameters such as the input manifest, output directory, pretrained models, and other settings.
+
+get_word_ts_anchor(s, e, option="start"): This function returns the start, end, or mid time of a given time range (start and end times) based on the specified option.
+
+get_words_speaker_mapping(wrd_ts, spk_ts, word_anchor_option="start"): This function takes word timestamps and speaker timestamps as input and returns a list of dictionaries with word, start time, end time, and speaker.
+
+get_first_word_idx_of_sentence(word_idx, word_list, speaker_list, max_words): This function returns the index of the first word of a sentence given a word index, word list, speaker list, and maximum number of words to look back.
+
+get_last_word_idx_of_sentence(word_idx, word_list, max_words): This function returns the index of the last word of a sentence given a word index, word list, and maximum number of words to look forward.
+
+get_realigned_ws_mapping_with_punctuation(word_speaker_mapping, max_words_in_sentence=50): This function realigns the word-speaker mapping based on punctuations and returns the updated list of dictionaries.
+
+get_sentences_speaker_mapping(word_speaker_mapping, spk_ts): This function takes the word-speaker mapping and speaker timestamps as input and returns a list of dictionaries containing speaker, start time, end time, and text of sentences.
+
+These functions work together to perform speaker diarization and process the results, such as obtaining word-speaker mappings and creating sentences with speaker information. The combine_srt_files function is separate and is used to merge multiple subtitle files into one.
+
+
+"""
 import argparse
 import os
 from whisper import load_model
@@ -17,9 +87,10 @@ from pydub.silence import detect_nonsilent
 import numpy as np
 from pydub import AudioSegment
 
-openai.api_key = os.environ["OPENAI_API_KEY"]
+APIKEY = os.environ["OPENAI_API_KEY"]
+openai.api_key = APIKEY
 
-participant = "Speaker" # retitle sepakers as participanats, usually "Speaker"
+participant = "participant" # retitle sepakers as participanats, usually "Speaker"
 """ Auto transcribe and diarize a batch of audio files, titling the most-frequent speaker as the 'instructor'
     """
     
@@ -94,14 +165,13 @@ def extract_instructor_embeddings(wsm, instructor_speaker_number):
         if word_dict['speaker'] == instructor_speaker_number:
             instructor_embeddings.append(word_dict['embedding'])
     return instructor_embeddings
-
 def split_audio(audio_file, max_duration=59*60*1000, min_silence_len=500, silence_thresh=-40):
     
     audio = AudioSegment.from_file(audio_file)
     audio_duration = len(audio)
 
     if audio_duration <= max_duration:
-        return [audio]
+        return [audio_file]  # Return the original file path if the duration is within the limit
 
     nonsilent_ranges = detect_nonsilent(audio, min_silence_len=min_silence_len, silence_thresh=silence_thresh)
     split_points = []
@@ -112,6 +182,15 @@ def split_audio(audio_file, max_duration=59*60*1000, min_silence_len=500, silenc
         if current_duration >= max_duration:
             split_points.append(end)
             current_duration = 0
+ 
+
+    def audio_segment_to_numpy(audio_segment):
+        samples = audio_segment.get_array_of_samples()
+        audio_numpy = np.array(samples).astype(np.float32)
+        audio_numpy /= np.iinfo(samples.typecode).max
+        return audio_numpy
+
+    audio_files = []  # Add this line to store audio file paths
 
     segments = []
     prev_split_point = 0
@@ -121,12 +200,13 @@ def split_audio(audio_file, max_duration=59*60*1000, min_silence_len=500, silenc
     segments.append(audio[prev_split_point:])
     
     for idx, segment in enumerate(segments):
-        filename=os.path.splitext(os.path.basename(audio_file))[0]+"_"+str(idx)+".m4a"
-        segment.export(filename, format="m4a")
+        filename=os.path.splitext(os.path.basename(audio_file))[0]+"_"+str(idx)+".wav"
+        segment.export(filename, format="wav")
+        audio_files.append(filename)  # Store the file path instead of the numpy array
 
-    return audio_file,segments
+    return audio_files
 
-    
+
 
 def diarize_audio(input_audio, model_name="medium.en", stemming=False):
 
@@ -461,8 +541,6 @@ def cleanup(path: str):
         raise ValueError("Path {} is not a file or dir.".format(path))
     
     
-if __name__ == "__main__": 
-    # This should work with 10hrs of audio in one file, if a whole day was recorded.
-    input_audio="long_audio_file.wav"
-    diarizedSRT=(batch_diarize_audio(split_audio(input_audio),model_name="medium.en",  stemming=False))
-    print(diarizedSRT)
+if __name__ == "__main__":
+    input_audio=input("audio file")
+    batch_diarize_audio(split_audio(input_audio),model_name="medium.en",  stemming=False)
